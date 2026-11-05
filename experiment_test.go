@@ -166,35 +166,26 @@ func TestGenerateContinuesPrompt(t *testing.T) {
 	}
 	prompt := []rune("aaabaaab")
 	const n = 12
-	out := trained.generate(prompt, n)
+	rng := rand.New(rand.NewPCG(1, 2))
+	out := trained.generate(prompt, n, rng)
 	if len(out) != len(prompt)+n {
 		t.Fatalf("length %d", len(out))
 	}
 	if string(out[:len(prompt)]) != string(prompt) {
 		t.Fatalf("prompt dropped: %q", string(out))
 	}
-	window := trained.net.window
-	for i := 0; i < n; i++ {
-		pos := len(prompt) + i
-		pred := trained.net.predict(func(feature int) float32 {
-			return trained.rankAt(out, pos-window+feature)
-		})
-		if out[pos] != trained.classes[pred] {
-			t.Fatalf("pos %d got %q network %q in %q", pos, string(out[pos]), string(trained.classes[pred]), string(out))
-		}
-	}
 	for _, r := range out[len(prompt):] {
 		if r != 'a' && r != 'b' {
 			t.Fatalf("generated %q", string(out))
 		}
 	}
-	// A full cycle of this text is enough context for the network to
-	// continue the same cycle.
+	// No spaces exist in this alphabet, so every rollout ties and the
+	// search follows the network along the cycle.
 	if string(out[len(prompt):]) != "aaabaaabaaab" {
 		t.Fatalf("continuation %q", string(out))
 	}
 	// A prompt that never occurs still yields training runes.
-	other := trained.generate([]rune("zz"), 4)
+	other := trained.generate([]rune("zz"), 4, rng)
 	if string(other[:2]) != "zz" || len(other) != 6 {
 		t.Fatalf("unseen prompt: %q", string(other))
 	}
@@ -202,6 +193,54 @@ func TestGenerateContinuesPrompt(t *testing.T) {
 		if r != 'a' && r != 'b' {
 			t.Fatalf("unseen continuation %q", string(other))
 		}
+	}
+}
+
+func TestMCTSAvoidsSpaceRun(t *testing.T) {
+	// Context is ignored. Space has most of the mass, so greedy decoding
+	// is a run of spaces. Search should sample the other class and refuse
+	// to continue the run.
+	const window = 4
+	net := &network{
+		window: window,
+		hidden: 1,
+		nClass: 2,
+		invStd: 1,
+		w1:     make([]float32, window),
+		b1:     make([]float32, 1),
+		w2:     make([]float32, 2),
+		b2:     []float32{2, 0},
+		x:      make([]float32, window),
+		h:      make([]float32, 1),
+		z:      make([]float32, 2),
+	}
+	trained := &model{
+		graph:   newMarkov(),
+		net:     net,
+		classes: []rune{' ', 'a'},
+	}
+	rng := rand.New(rand.NewPCG(1, 2))
+	const n = 24
+	greedy := make([]rune, 0, n)
+	for i := 0; i < n; i++ {
+		c := net.predict(func(int) float32 { return 0 })
+		greedy = append(greedy, trained.classes[c])
+	}
+	if !strings.Contains(string(greedy), "    ") {
+		t.Fatalf("greedy did not collapse: %q", string(greedy))
+	}
+	out := trained.generate([]rune("a"), n, rng)
+	if string(out[:1]) != "a" || len(out) != n+1 {
+		t.Fatalf("prompt: %q", string(out))
+	}
+	body := string(out[1:])
+	if strings.Contains(body, "  ") || strings.Count(body, "a") < n-2 {
+		t.Fatalf("continuation %q", body)
+	}
+	// A prompt that already ends on a space must not extend that run.
+	spaced := trained.generate([]rune("a "), 8, rng)
+	if len(spaced) != 10 || spaced[2] == ' ' || strings.Contains(string(spaced[2:]), "  ") {
+		t.Fatalf("extended a space run: %q", string(spaced))
 	}
 }
 

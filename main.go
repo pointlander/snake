@@ -9,13 +9,14 @@
 // the first 90% of the text. The remaining 10% is written to a validation
 // file and scored once, with the graph and the network frozen.
 //
-// With -generate, the network continues -prompt. Each new rune is its
-// prediction from the PageRank of the previous 256 states.
+// With -generate, Monte Carlo tree search continues -prompt. Each step
+// samples the network, and rollouts that run into spaces score worse.
 package main
 
 import (
 	"flag"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"time"
 )
@@ -24,7 +25,7 @@ func main() {
 	textPath := flag.String("text", "100.txt.utf-8", "UTF-8 text to model")
 	valPath := flag.String("validation", "validation.txt", "where to write the held-out text")
 	trainFrac := flag.Float64("train", 0.9, "fraction of the text used to train")
-	generate := flag.Bool("generate", false, "continue -prompt with the trained network")
+	generate := flag.Bool("generate", false, "continue -prompt with Monte Carlo tree search")
 	prompt := flag.String("prompt", "To be or not to be", "text to continue in -generate mode")
 	nGen := flag.Int("n", 256, "runes to generate after the prompt")
 	flag.Parse()
@@ -79,7 +80,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "generate: model was not trained\n")
 			os.Exit(1)
 		}
-		out := trained.generate([]rune(*prompt), *nGen)
+		rng := rand.New(rand.NewPCG(cfg.seed^0x9e3779b97f4a7c15, cfg.seed))
+		out := trained.generate([]rune(*prompt), *nGen, rng)
 		fmt.Printf("\n%s\n", string(out))
 	}
 }

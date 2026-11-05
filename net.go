@@ -28,11 +28,15 @@ type network struct {
 	z      []float32
 }
 
-func (n *network) predict(at func(feature int) float32) uint8 {
+func (n *network) logits(at func(feature int) float32) {
 	for i := 0; i < n.window; i++ {
 		n.x[i] = (at(i) - n.mean) * n.invStd
 	}
 	forward(n.w1, n.b1, n.w2, n.b2, n.x, n.h, nil, n.z, n.window, n.hidden, n.nClass)
+}
+
+func (n *network) predict(at func(feature int) float32) uint8 {
+	n.logits(at)
 	best := 0
 	for c := 1; c < n.nClass; c++ {
 		if n.z[c] > n.z[best] {
@@ -40,6 +44,13 @@ func (n *network) predict(at func(feature int) float32) uint8 {
 		}
 	}
 	return uint8(best)
+}
+
+// probs writes the softmax over class logits into dst.
+func (n *network) probs(at func(feature int) float32, dst []float32) {
+	n.logits(at)
+	copy(dst, n.z)
+	softmax(dst)
 }
 
 // forward writes ReLU activations to h and logits to z.

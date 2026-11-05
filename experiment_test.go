@@ -105,7 +105,7 @@ func powerPageRank(m *markov, damping float64) []float64 {
 	return p
 }
 
-func TestForestSeparatesThreshold(t *testing.T) {
+func TestNetworkSeparatesThreshold(t *testing.T) {
 	// Feature 0 is the label. The other features are noise.
 	const (
 		n      = 400
@@ -125,15 +125,14 @@ func TestForestSeparatesThreshold(t *testing.T) {
 		examples = append(examples, t)
 	}
 	cfg := config{
-		window:      window,
-		trees:       8,
-		maxDepth:    6,
-		minLeaf:     1,
-		mtry:        window,
-		splitSample: 200,
-		seed:        9,
+		window: window,
+		hidden: 8,
+		epochs: 40,
+		batch:  32,
+		lr:     0.1,
+		seed:   9,
 	}
-	f := trainForest(pr, nil, nil, labels, examples, 2, cfg, nil)
+	f := trainNetwork(pr, nil, nil, labels, examples, 2, cfg, nil)
 	correct := 0
 	for _, t := range examples {
 		origin := t - window
@@ -148,6 +147,64 @@ func TestForestSeparatesThreshold(t *testing.T) {
 	}
 }
 
+func TestGenerateContinuesPrompt(t *testing.T) {
+	text := []rune(strings.Repeat("aaab", 500))
+	cut := int(float64(len(text)) * 0.9)
+	cfg := config{
+		window:       4,
+		damping:      0.85,
+		walksPerNode: 20,
+		hidden:       16,
+		epochs:       40,
+		batch:        32,
+		lr:           0.1,
+		seed:         1,
+	}
+	_, trained := experiment(text, cut, cfg, nil)
+	if trained == nil {
+		t.Fatal("missing model")
+	}
+	prompt := []rune("aaabaaab")
+	const n = 12
+	out := trained.generate(prompt, n)
+	if len(out) != len(prompt)+n {
+		t.Fatalf("length %d", len(out))
+	}
+	if string(out[:len(prompt)]) != string(prompt) {
+		t.Fatalf("prompt dropped: %q", string(out))
+	}
+	window := trained.net.window
+	for i := 0; i < n; i++ {
+		pos := len(prompt) + i
+		pred := trained.net.predict(func(feature int) float32 {
+			return trained.rankAt(out, pos-window+feature)
+		})
+		if out[pos] != trained.classes[pred] {
+			t.Fatalf("pos %d got %q network %q in %q", pos, string(out[pos]), string(trained.classes[pred]), string(out))
+		}
+	}
+	for _, r := range out[len(prompt):] {
+		if r != 'a' && r != 'b' {
+			t.Fatalf("generated %q", string(out))
+		}
+	}
+	// A full cycle of this text is enough context for the network to
+	// continue the same cycle.
+	if string(out[len(prompt):]) != "aaabaaabaaab" {
+		t.Fatalf("continuation %q", string(out))
+	}
+	// A prompt that never occurs still yields training runes.
+	other := trained.generate([]rune("zz"), 4)
+	if string(other[:2]) != "zz" || len(other) != 6 {
+		t.Fatalf("unseen prompt: %q", string(other))
+	}
+	for _, r := range other[2:] {
+		if r != 'a' && r != 'b' {
+			t.Fatalf("unseen continuation %q", string(other))
+		}
+	}
+}
+
 func TestRepeatingTextBeatsMajority(t *testing.T) {
 	// "aaab" makes an asymmetric 4-cycle of bigrams, so PageRank values
 	// identify the state and a short window identifies the next rune.
@@ -157,14 +214,13 @@ func TestRepeatingTextBeatsMajority(t *testing.T) {
 		window:       4,
 		damping:      0.85,
 		walksPerNode: 20,
-		trees:        8,
-		maxDepth:     8,
-		minLeaf:      1,
-		mtry:         4,
-		splitSample:  256,
+		hidden:       16,
+		epochs:       40,
+		batch:        32,
+		lr:           0.1,
 		seed:         1,
 	}
-	m := experiment(text, cut, cfg, nil)
+	m, _ := experiment(text, cut, cfg, nil)
 	if m.Nodes < 3 {
 		t.Fatalf("nodes %d", m.Nodes)
 	}

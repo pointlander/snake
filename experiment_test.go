@@ -147,6 +147,62 @@ func TestNetworkSeparatesThreshold(t *testing.T) {
 	}
 }
 
+func TestForestSeparatesThreshold(t *testing.T) {
+	// Feature 0 is the label. The other features are noise.
+	const (
+		n      = 400
+		window = 4
+	)
+	pr := make([]float32, n)
+	labels := make([]uint8, n)
+	examples := make([]int, 0, n-window-1)
+	rng := rand.New(rand.NewPCG(3, 5))
+	for t := 1; t < n; t++ {
+		pr[t] = float32(rng.Float64())
+	}
+	for t := window + 1; t < n; t++ {
+		if pr[t-window] >= 0.5 {
+			labels[t] = 1
+		}
+		examples = append(examples, t)
+	}
+	cfg := config{
+		window:      window,
+		trees:       8,
+		maxDepth:    6,
+		minLeaf:     1,
+		mtry:        window,
+		splitSample: 200,
+		seed:        9,
+	}
+	f := trainForest(pr, nil, nil, labels, examples, 2, cfg, nil)
+	correct := 0
+	probs := make([]float32, 2)
+	for _, ex := range examples {
+		origin := ex - window
+		at := func(feature int) float32 { return pr[origin+feature] }
+		pred := f.predict(at)
+		if pred == labels[ex] {
+			correct++
+		}
+		f.probs(at, probs)
+		if math.Abs(float64(probs[0]+probs[1])-1) > 1e-5 {
+			t.Fatalf("probs %v", probs)
+		}
+		want := uint8(0)
+		if probs[1] > probs[0] {
+			want = 1
+		}
+		if want != pred {
+			t.Fatalf("probs %v predict %d", probs, pred)
+		}
+	}
+	acc := float64(correct) / float64(len(examples))
+	if acc < 0.95 {
+		t.Fatalf("accuracy %f", acc)
+	}
+}
+
 func TestGenerateContinuesPrompt(t *testing.T) {
 	text := []rune(strings.Repeat("aaab", 500))
 	cut := int(float64(len(text)) * 0.9)
@@ -216,8 +272,9 @@ func TestMCTSAvoidsSpaceRun(t *testing.T) {
 	}
 	trained := &model{
 		graph:   newMarkov(),
-		net:     net,
+		pred:    net,
 		classes: []rune{' ', 'a'},
+		window:  window,
 	}
 	rng := rand.New(rand.NewPCG(1, 2))
 	const n = 24
@@ -249,16 +306,41 @@ func TestRepeatingTextBeatsMajority(t *testing.T) {
 	// identify the state and a short window identifies the next rune.
 	text := []rune(strings.Repeat("aaab", 500))
 	cut := int(float64(len(text)) * 0.9)
-	cfg := config{
-		window:       4,
-		damping:      0.85,
-		walksPerNode: 20,
-		hidden:       16,
-		epochs:       40,
-		batch:        32,
-		lr:           0.1,
-		seed:         1,
+	cases := []config{
+		{
+			model:        "net",
+			window:       4,
+			damping:      0.85,
+			walksPerNode: 20,
+			hidden:       16,
+			epochs:       40,
+			batch:        32,
+			lr:           0.1,
+			seed:         1,
+		},
+		{
+			model:        "forest",
+			window:       4,
+			damping:      0.85,
+			walksPerNode: 20,
+			trees:        8,
+			maxDepth:     8,
+			minLeaf:      1,
+			mtry:         4,
+			focus:        4,
+			splitSample:  256,
+			seed:         1,
+		},
 	}
+	for _, cfg := range cases {
+		t.Run(cfg.model, func(t *testing.T) {
+			checkRepeating(t, text, cut, cfg)
+		})
+	}
+}
+
+func checkRepeating(t *testing.T, text []rune, cut int, cfg config) {
+	t.Helper()
 	m, _ := experiment(text, cut, cfg, nil)
 	if m.Nodes < 3 {
 		t.Fatalf("nodes %d", m.Nodes)

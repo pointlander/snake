@@ -4,13 +4,14 @@
 
 // Command snake builds a second-order Markov graph of a text, estimates
 // PageRank with the Monte Carlo complete-path method as states appear, and
-// trains a two-layer feedforward network to predict the next rune from
-// the normalized PageRank of the previous 256 states. The network sees
-// the first 90% of the text. The remaining 10% is written to a validation
-// file and scored once, with the graph and the network frozen.
+// trains a predictor for the next rune from the normalized PageRank of the
+// previous 256 states. -model net selects a two-layer network. -model forest
+// selects a random forest. The predictor sees the first 90% of the text.
+// The remaining 10% is written to a validation file and scored once, with
+// the graph and the predictor frozen.
 //
 // With -generate, Monte Carlo tree search continues -prompt. Each step
-// samples the network, and rollouts that run into spaces score worse.
+// samples the predictor, and rollouts that run into spaces score worse.
 package main
 
 import (
@@ -25,10 +26,15 @@ func main() {
 	textPath := flag.String("text", "100.txt.utf-8", "UTF-8 text to model")
 	valPath := flag.String("validation", "validation.txt", "where to write the held-out text")
 	trainFrac := flag.Float64("train", 0.9, "fraction of the text used to train")
+	kind := flag.String("model", "net", "predictor to train: net or forest")
 	generate := flag.Bool("generate", false, "continue -prompt with Monte Carlo tree search")
 	prompt := flag.String("prompt", "To be or not to be", "text to continue in -generate mode")
 	nGen := flag.Int("n", 256, "runes to generate after the prompt")
 	flag.Parse()
+	if *kind != "net" && *kind != "forest" {
+		fmt.Fprintf(os.Stderr, "model must be net or forest\n")
+		os.Exit(1)
+	}
 
 	data, err := os.ReadFile(*textPath)
 	if err != nil {
@@ -58,10 +64,17 @@ func main() {
 		window:       256,
 		damping:      0.85,
 		walksPerNode: 8,
+		model:        *kind,
 		hidden:       64,
 		epochs:       2,
 		batch:        128,
 		lr:           0.05,
+		trees:        16,
+		maxDepth:     18,
+		minLeaf:      2,
+		mtry:         8,
+		focus:        8,
+		splitSample:  2048,
 		seed:         1,
 	}
 	logf := func(format string, args ...any) {
@@ -69,6 +82,7 @@ func main() {
 	}
 	m, trained := experiment(text, cut, cfg, logf)
 	fmt.Printf("runes %d  train %d  validation %d\n", m.Runes, m.Cut, m.ValN)
+	fmt.Printf("model %s\n", cfg.model)
 	fmt.Printf("states %d  edges %d  pagerank recomputes %d  classes %d\n", m.Nodes, m.Edges, m.Recomputes, m.Classes)
 	fmt.Printf("train accuracy %.4f  (%d/%d)\n", ratio(m.TrainCorrect, m.TrainN), m.TrainCorrect, m.TrainN)
 	fmt.Printf("validation accuracy %.4f  (%d/%d)\n", ratio(m.ValCorrect, m.ValN), m.ValCorrect, m.ValN)

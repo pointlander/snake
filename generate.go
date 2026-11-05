@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	// Distinct next runes drawn from the network at the root.
+	// Distinct next runes drawn from the predictor at the root.
 	mctsCandidates = 8
-	// Network rollouts used to score every candidate before extra search.
+	// Predictor rollouts used to score every candidate before extra search.
 	mctsRollouts = 4
 	// Additional rollouts given to whichever child PUCT prefers.
 	mctsExtra = 16
@@ -23,15 +23,15 @@ const (
 )
 
 // generate continues prompt by n runes. Monte Carlo tree search samples
-// the network: each candidate next rune is scored by continuations drawn
-// from the network, and a run of spaces scores worse than a single space.
+// the predictor: each candidate next rune is scored by continuations drawn
+// from the predictor, and a run of spaces scores worse than a single space.
 func (m *model) generate(prompt []rune, n int, rng *rand.Rand) []rune {
 	if n < 0 {
 		n = 0
 	}
 	out := make([]rune, len(prompt), len(prompt)+n)
 	copy(out, prompt)
-	if m == nil || m.net == nil || m.graph == nil || len(m.classes) == 0 || n == 0 {
+	if m == nil || m.pred == nil || m.graph == nil || len(m.classes) == 0 || m.window < 1 || n == 0 {
 		return out
 	}
 	st := m.newState(prompt)
@@ -43,8 +43,8 @@ func (m *model) generate(prompt []rune, n int, rng *rand.Rand) []rune {
 	return out
 }
 
-// search picks the next rune. Candidates are sampled from the network
-// without replacement. A rollout is another sample from the network, not
+// search picks the next rune. Candidates are sampled from the predictor
+// without replacement. A rollout is another sample from the predictor, not
 // a move the tree chooses: a tree-chosen continuation would spend the
 // later plies canceling a space run, and the run would no longer count
 // against the rune that started it.
@@ -60,7 +60,7 @@ func (m *model) search(st searchState, rng *rand.Rand) rune {
 	if len(root.children) == 0 {
 		return m.classes[samplePrior(root.probs, rng)]
 	}
-	scratch := make([]float32, m.net.nClass)
+	scratch := make([]float32, len(m.classes))
 	roll := func(ch *mctsNode) {
 		cur := st.clone()
 		runes := make([]rune, 1, mctsHorizon)
@@ -96,7 +96,7 @@ type searchState struct {
 }
 
 func (m *model) newState(prompt []rune) searchState {
-	window := m.net.window
+	window := m.window
 	st := searchState{ring: make([]float32, window)}
 	for feature := 0; feature < window; feature++ {
 		st.ring[feature] = m.rankAt(prompt, len(prompt)-window+feature)
@@ -136,14 +136,14 @@ func (s *searchState) push(m *model, r rune) {
 }
 
 func (m *model) policy(st searchState) []float32 {
-	p := make([]float32, m.net.nClass)
+	p := make([]float32, len(m.classes))
 	m.fillProbs(st, p)
 	return p
 }
 
 func (m *model) fillProbs(st searchState, dst []float32) {
 	window := len(st.ring)
-	m.net.probs(func(feature int) float32 {
+	m.pred.probs(func(feature int) float32 {
 		return st.ring[(st.head+feature)%window]
 	}, dst)
 }
